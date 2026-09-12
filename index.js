@@ -63,7 +63,7 @@ async function registerCommands(clientId) {
   }
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`🔒 Category Lock Active: Category ID ${TARGET_CATEGORY_ID}`);
   await registerCommands(CLIENT_ID || client.user.id);
