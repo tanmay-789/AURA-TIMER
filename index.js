@@ -72,21 +72,37 @@ client.once('clientReady', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  // 1. Fetch full member from guild to guarantee voice state cache is loaded
+  // 1. Fetch full member from guild to guarantee voice state cache is loaded.
+  //    Force a fresh fetch (bypass cache) since cached member data can be stale
+  //    with respect to voice state, especially right after joining a channel.
   let member = interaction.member;
-  if ((!member || !member.voice || !member.voice.channel) && interaction.guild) {
+  if (interaction.guild) {
     try {
-      member = await interaction.guild.members.fetch(interaction.user.id);
+      member = await interaction.guild.members.fetch({ user: interaction.user.id, force: true });
     } catch (e) {
-      console.warn('Could not fetch member:', e);
+      console.warn('Could not force-fetch member, falling back to cached member:', e);
+      member = interaction.member;
     }
   }
 
-  // 2. Identify Voice Channel (either member's connected voice or current voice channel's chat)
-  let voiceChannel = member?.voice?.channel;
+  // 2. Identify Voice Channel. Prefer the guild's voice state cache directly
+  //    (guild.voiceStates.cache) since it is the source of truth Discord.js
+  //    uses internally, and is more reliable than member.voice in edge cases
+  //    where the member object was fetched without an up-to-date voice state.
+  let voiceChannel =
+    interaction.guild?.voiceStates?.cache?.get(interaction.user.id)?.channel ||
+    member?.voice?.channel ||
+    null;
+
   if (!voiceChannel && interaction.channel && typeof interaction.channel.isVoiceBased === 'function' && interaction.channel.isVoiceBased()) {
     voiceChannel = interaction.channel;
   }
+
+  console.log(
+    `[VoiceCheck] user=${interaction.user.tag} (${interaction.user.id}) ` +
+    `detectedVoiceChannel=${voiceChannel ? `${voiceChannel.name} (${voiceChannel.id})` : 'none'} ` +
+    `channelCategoryId=${voiceChannel ? (voiceChannel.parentId || (voiceChannel.parent && voiceChannel.parent.id) || 'none') : 'n/a'}`
+  );
 
   // 3. Verify user is in a voice channel
   if (!voiceChannel) {
@@ -100,6 +116,10 @@ client.on('interactionCreate', async (interaction) => {
   const channelCategoryId = voiceChannel.parentId || (voiceChannel.parent && voiceChannel.parent.id);
   const cleanTargetId = String(TARGET_CATEGORY_ID).trim();
   const cleanCurrentId = String(channelCategoryId || '').trim();
+
+  console.log(
+    `[VoiceCheck] cleanCurrentId=${cleanCurrentId || 'none'} cleanTargetId=${cleanTargetId} match=${cleanCurrentId === cleanTargetId}`
+  );
 
   if (cleanCurrentId !== cleanTargetId) {
     return interaction.reply({
