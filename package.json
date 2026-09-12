@@ -1,0 +1,13 @@
+{
+  "name": "discord-vc-timer-bot",
+  "version": "1.0.0",
+  "description": "Discord VC group timer bot with category restriction",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7"
+  }
+}
