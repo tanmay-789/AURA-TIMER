@@ -72,19 +72,38 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  const member = interaction.member;
-  const voiceChannel = member?.voice?.channel;
+  // 1. Fetch full member from guild to guarantee voice state cache is loaded
+  let member = interaction.member;
+  if ((!member || !member.voice || !member.voice.channel) && interaction.guild) {
+    try {
+      member = await interaction.guild.members.fetch(interaction.user.id);
+    } catch (e) {
+      console.warn('Could not fetch member:', e);
+    }
+  }
 
+  // 2. Identify Voice Channel (either member's connected voice or current voice channel's chat)
+  let voiceChannel = member?.voice?.channel;
+  if (!voiceChannel && interaction.channel && typeof interaction.channel.isVoiceBased === 'function' && interaction.channel.isVoiceBased()) {
+    voiceChannel = interaction.channel;
+  }
+
+  // 3. Verify user is in a voice channel
   if (!voiceChannel) {
     return interaction.reply({
-      content: '❌ **Not Connected**: You must be connected to a voice channel to use this command.',
+      content: '❌ **Not Connected**: You must be connected to a voice channel to use this command.\n*(Tip: Join your voice room first, then type `/start`)*',
       ephemeral: true
     });
   }
 
-  if (voiceChannel.parentId !== TARGET_CATEGORY_ID) {
+  // 4. Verify Category ID matches 1546251812284141578
+  const channelCategoryId = voiceChannel.parentId || (voiceChannel.parent && voiceChannel.parent.id);
+  const cleanTargetId = String(TARGET_CATEGORY_ID).trim();
+  const cleanCurrentId = String(channelCategoryId || '').trim();
+
+  if (cleanCurrentId !== cleanTargetId) {
     return interaction.reply({
-      content: `⚠️ **Access Restricted**: You can only use this command inside a Voice Channel within Category \`${TARGET_CATEGORY_ID}\`.\nYour channel (\`${voiceChannel.name}\`) is in category \`${voiceChannel.parentId || 'None'}\`.`,
+      content: `⚠️ **Access Restricted**: You can only use this command inside a Voice Channel within Category \`${cleanTargetId}\`.\nYour voice channel (\`${voiceChannel.name}\`) has Category ID: \`${channelCategoryId || 'None'}\`.`,
       ephemeral: true
     });
   }
@@ -121,7 +140,7 @@ client.on('interactionCreate', async (interaction) => {
           timerData.totalSeconds = timerData.breakMinutes * 60;
           timerData.remainingSeconds = timerData.totalSeconds;
           voiceChannel.send({
-            content: `🔔 **Session Complete!** Great work everyone in **${voiceChannel.name}**! Take a **${timerData.breakMinutes} min** break. ☕`
+            content: `🔔 **Session Complete!** Great work in **${voiceChannel.name}**! Take a **${timerData.breakMinutes} min** break. ☕`
           }).catch(console.error);
         } else if (timerData.phase === 'break') {
           timerData.phase = 'session';
@@ -144,7 +163,7 @@ client.on('interactionCreate', async (interaction) => {
         { name: '📚 Session Time', value: `\`${sessionTime} minutes\``, inline: true },
         { name: '☕ Break Time', value: `\`${breakTime} minutes\``, inline: true },
         { name: '👤 Started By', value: `<@${interaction.user.id}>`, inline: true },
-        { name: '📁 Category ID', value: `\`${TARGET_CATEGORY_ID}\` *(Authorized)*`, inline: true }
+        { name: '📁 Category ID', value: `\`${cleanTargetId}\` *(Authorized)*`, inline: true }
       )
       .setTimestamp();
 
