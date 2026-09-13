@@ -40,6 +40,7 @@ const BLOCKED_CATEGORY_IDS = [
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
   ]
@@ -203,7 +204,7 @@ async function registerCleanCommands(clientId) {
       try {
         const guild = await oAuth2Guild.fetch();
         await guild.commands.set(commands);
-        console.log(`✅ Synced clean commands (/start, /stop, /timer) to guild: ${guild.name}`);
+        console.log(`✅ Synced clean commands (/start, /stop, /timer, /settings) to guild: ${guild.name}`);
       } catch (err) {
         console.warn(`Warning: Could not sync commands to guild ${guildId}:`, err.message);
       }
@@ -213,7 +214,7 @@ async function registerCleanCommands(clientId) {
   }
 }
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log("✅ Logged in as " + client.user.tag);
   console.log("🌐 Universal Voice Channel Mode active.");
   await registerCleanCommands(CLIENT_ID || client.user.id);
@@ -432,13 +433,13 @@ client.on("interactionCreate", async (interaction) => {
     // Pings all VC members who have timer mentions enabled (e.g., "@Warrior - Use /settings to change this")
     const pingContent = getMentionsForChannel(voiceChannel);
 
-    const replyOptions = { embeds: [initialEmbed], fetchReply: true };
+    const replyOptions = { embeds: [initialEmbed], withResponse: true };
     if (pingContent) {
       replyOptions.content = pingContent;
     }
 
-    const replyMsg = await interaction.reply(replyOptions);
-    timerData.message = replyMsg;
+    const replyRes = await interaction.reply(replyOptions);
+    timerData.message = replyRes?.resource?.message || replyRes;
 
     // Timer Loop: 1-second interval with live 10-second embed updates
     timerData.intervalId = setInterval(async () => {
