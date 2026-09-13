@@ -1,8 +1,20 @@
 // Discord Voice Channel Timer Bot (ST!Timer style)
 // Universal Voice Channel Mode - Works in ANY Voice Channel!
-// Commands: /start, /stop, /timer
+// Commands: /start, /stop, /timer, /settings
 
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { 
+  Client, 
+  GatewayIntentBits, 
+  REST, 
+  Routes, 
+  SlashCommandBuilder, 
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} = require("discord.js");
+const fs = require("fs");
+const path = require("path");
 require("dotenv").config();
 
 const TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -33,7 +45,109 @@ const activeTimers = new Map();
 // Signature ST!Timer color: #F04747
 const ST_COLOR = 0xF04747;
 
-// Exactly 3 clean slash commands (/start, /stop, /timer)
+// Persistent User Settings (Saved to user-settings.json)
+const SETTINGS_FILE = path.join(__dirname, "user-settings.json");
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.error("Error reading user-settings.json:", e);
+  }
+  return {};
+}
+
+function saveSettings(settings) {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf8");
+  } catch (e) {
+    console.error("Error writing user-settings.json:", e);
+  }
+}
+
+const userSettingsCache = loadSettings();
+
+function getUserSettings(userId) {
+  if (!userSettingsCache[userId]) {
+    userSettingsCache[userId] = {
+      timerMentions: true, // enabled by default as requested
+      autoAccountability: false
+    };
+  }
+  return userSettingsCache[userId];
+}
+
+function updateUserSettings(userId, newSettings) {
+  userSettingsCache[userId] = {
+    ...getUserSettings(userId),
+    ...newSettings
+  };
+  saveSettings(userSettingsCache);
+  return userSettingsCache[userId];
+}
+
+// Generate the /settings UI message with toggle buttons matching screenshot
+function getSettingsResponse(userId) {
+  const settings = getUserSettings(userId);
+  const timerOn = settings.timerMentions !== false;
+  const accountabilityOn = settings.autoAccountability === true;
+
+  const content = [
+    "# Current settings",
+    "Press the buttons next to each setting to change your settings",
+    "",
+    "⏱️ **Timer mentions**",
+    "Timer mentions you after a break/work session",
+    "",
+    "👁️ **Auto Accountability Mentions**",
+    "Toggle the use of our automatic accountability system"
+  ].join("\n");
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("setting_timer_mentions")
+      .setLabel(timerOn ? "On" : "Off")
+      .setStyle(timerOn ? ButtonStyle.Success : ButtonStyle.Danger)
+      .setEmoji(timerOn ? "🟢" : "⛔")
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("setting_auto_accountability")
+      .setLabel(accountabilityOn ? "On" : "Off")
+      .setStyle(accountabilityOn ? ButtonStyle.Success : ButtonStyle.Danger)
+      .setEmoji(accountabilityOn ? "🟢" : "⛔")
+  );
+
+  return {
+    content,
+    components: [row1, row2],
+    ephemeral: true
+  };
+}
+
+// Format mentions for all eligible VC members (e.g., "@Warrior - Use /settings to change this")
+function getMentionsForChannel(channel) {
+  if (!channel || !channel.members) return "";
+  const eligible = [];
+  try {
+    channel.members.forEach(member => {
+      if (member.user && member.user.bot) return;
+      const settings = getUserSettings(member.id);
+      if (settings.timerMentions !== false) {
+        eligible.push(`<@${member.id}>`);
+      }
+    });
+  } catch (err) {
+    console.warn("Could not retrieve channel members:", err);
+  }
+  if (eligible.length === 0) return "";
+  return `${eligible.join(" ")} - Use \`/settings\` to change this`;
+}
+
+// Slash commands: /start, /stop, /timer, /settings
 const commands = [
   new SlashCommandBuilder()
     .setName("start")
@@ -58,6 +172,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName("timer")
     .setDescription("Check current phase and time left"),
+  new SlashCommandBuilder()
+    .setName("settings")
+    .setDescription("Configure your timer mentions and bot settings"),
+  new SlashCommandBuilder()
+    .setName("setting")
+    .setDescription("Configure your timer mentions and bot settings"),
 ].map(cmd => cmd.toJSON());
 
 /**
@@ -117,8 +237,8 @@ function buildTimerEmbed(phase, sessionMins, breakMins, targetUnix, sessionNum) 
     : `➔ **[BREAK] Next session will be** <t:${targetUnix}:R>`;
 
   const subLine = isWork
-    ? `Good luck! | Session ${sessionNum}`
-    : `Take a break! | Session ${sessionNum}`;
+    ? `${EMOJI_WISH} Good luck! | Session ${sessionNum}`
+    : `${EMOJI_WISH} Take a break! | Session ${sessionNum}`;
 
   return new EmbedBuilder()
     .setColor(ST_COLOR)
@@ -128,14 +248,43 @@ function buildTimerEmbed(phase, sessionMins, breakMins, targetUnix, sessionNum) 
       "",
       targetLine,
       subLine,
-      `${EMOJI_WISH} Do not change the timer without permissions of others`
+      "",
+      "Do not change the timer without permissions of others"
     ].join("\n"));
 }
 
 client.on("interactionCreate", async (interaction) => {
+  // Handle button clicks for /settings toggles
+  if (interaction.isButton()) {
+    const customId = interaction.customId;
+    if (customId === "setting_timer_mentions" || customId === "setting_auto_accountability") {
+      const settings = getUserSettings(interaction.user.id);
+      if (customId === "setting_timer_mentions") {
+        const nextVal = !(settings.timerMentions !== false);
+        updateUserSettings(interaction.user.id, { timerMentions: nextVal });
+      } else if (customId === "setting_auto_accountability") {
+        const nextVal = !(settings.autoAccountability === true);
+        updateUserSettings(interaction.user.id, { autoAccountability: nextVal });
+      }
+
+      const updatedResp = getSettingsResponse(interaction.user.id);
+      return interaction.update({
+        content: updatedResp.content,
+        components: updatedResp.components
+      });
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const cmd = interaction.commandName;
+
+  // /settings & /setting command (Accessible from anywhere, ephemeral)
+  if (cmd === "settings" || cmd === "setting") {
+    const resp = getSettingsResponse(interaction.user.id);
+    return interaction.reply(resp);
+  }
 
   // Legacy commands removed notice
   if (cmd === "pause" || cmd === "resume") {
@@ -144,9 +293,11 @@ client.on("interactionCreate", async (interaction) => {
       .setDescription([
         "⚠️ **Command Removed**",
         `The \`/${cmd}\` command has been removed.`,
+        "",
         "➔ **Please use /start, /stop, or /timer**",
-        "Good luck!",
-        `${EMOJI_WISH} Do not change the timer without permissions of others`
+        `${EMOJI_WISH} Good luck!`,
+        "",
+        "Do not change the timer without permissions of others"
       ].join("\n"));
     return interaction.reply({ embeds: [removedEmbed], ephemeral: true });
   }
@@ -172,9 +323,11 @@ client.on("interactionCreate", async (interaction) => {
       .setDescription([
         "❌ **Not Connected**",
         "You must be connected to a voice channel to use this command.",
+        "",
         "➔ **Join any voice channel in the server, then run /start**",
-        "Good luck!",
-        `${EMOJI_WISH} Do not change the timer without permissions of others`
+        `${EMOJI_WISH} Good luck!`,
+        "",
+        "Do not change the timer without permissions of others"
       ].join("\n"));
     return interaction.reply({ embeds: [notConnectedEmbed], ephemeral: true });
   }
@@ -214,11 +367,19 @@ client.on("interactionCreate", async (interaction) => {
     // Line 1: <:emoji_30:1522204006221480006> **New study session started**
     // Line 2: Focus timer: **50 minutes work** – **10 minutes break**
     // Line 3: ➔ **[WORK] Next break will be** <t:1789382944:R>
-    // Line 4: Good luck! | Session 1
-    // Line 5: <:stn_bforyou:1544939254671478794> Do not change the timer without permissions of others
+    // Line 4: <:stn_bforyou:1544939254671478794> Good luck! | Session 1
+    // Line 5: Do not change the timer without permissions of others
     const initialEmbed = buildTimerEmbed("session", sessionTime, breakTime, targetUnix, 1);
 
-    const replyMsg = await interaction.reply({ embeds: [initialEmbed], fetchReply: true });
+    // Pings all VC members who have timer mentions enabled (e.g., "@Warrior - Use /settings to change this")
+    const pingContent = getMentionsForChannel(voiceChannel);
+
+    const replyOptions = { embeds: [initialEmbed], fetchReply: true };
+    if (pingContent) {
+      replyOptions.content = pingContent;
+    }
+
+    const replyMsg = await interaction.reply(replyOptions);
     timerData.message = replyMsg;
 
     // Timer Loop: 1-second interval with live 10-second embed updates
@@ -238,7 +399,13 @@ client.on("interactionCreate", async (interaction) => {
           const breakEmbed = buildTimerEmbed("break", timerData.sessionMinutes, timerData.breakMinutes, nextTargetUnix, timerData.sessionNumber);
 
           try {
-            const sentBreakMsg = await voiceChannel.send({ embeds: [breakEmbed] });
+            // Fresh VC fetch: automatically includes any members who joined during the session!
+            const currentVC = await client.channels.fetch(timerData.channelId).catch(() => voiceChannel);
+            const pings = getMentionsForChannel(currentVC);
+            const sentBreakMsg = await currentVC.send({
+              content: pings || undefined,
+              embeds: [breakEmbed]
+            });
             timerData.message = sentBreakMsg; // Live updates continue on the new break message
           } catch (e) {
             console.error("Failed to send break announcement:", e);
@@ -254,7 +421,13 @@ client.on("interactionCreate", async (interaction) => {
           const workEmbed = buildTimerEmbed("session", timerData.sessionMinutes, timerData.breakMinutes, nextTargetUnix, timerData.sessionNumber);
 
           try {
-            const sentWorkMsg = await voiceChannel.send({ embeds: [workEmbed] });
+            // Fresh VC fetch: automatically includes any members who joined during the break!
+            const currentVC = await client.channels.fetch(timerData.channelId).catch(() => voiceChannel);
+            const pings = getMentionsForChannel(currentVC);
+            const sentWorkMsg = await currentVC.send({
+              content: pings || undefined,
+              embeds: [workEmbed]
+            });
             timerData.message = sentWorkMsg; // Live updates continue on the new work message
           } catch (e) {
             console.error("Failed to send work announcement:", e);
@@ -301,8 +474,9 @@ client.on("interactionCreate", async (interaction) => {
           `Focus timer: **${timer.sessionMinutes} minutes work** – **${timer.breakMinutes} minutes break**`,
           "",
           `➔ **[STOP] Timer stopped for this channel after ${sessionsCount} ${sessionsCount === 1 ? "session" : "sessions"}**`,
-          `Good work! | Session ${sessionsCount}`,
-          `${EMOJI_WISH} Do not change the timer without permissions of others`
+          `${EMOJI_WISH} Good work! | Session ${sessionsCount}`,
+          "",
+          "Do not change the timer without permissions of others"
         ].join("\n"));
 
       await interaction.reply({ embeds: [stopEmbed] });
@@ -314,8 +488,9 @@ client.on("interactionCreate", async (interaction) => {
           "No active timer running in this voice channel.",
           "",
           "➔ **Use /start to begin a study session!**",
-          "Good luck!",
-          `${EMOJI_WISH} Do not change the timer without permissions of others`
+          `${EMOJI_WISH} Good luck!`,
+          "",
+          "Do not change the timer without permissions of others"
         ].join("\n"));
 
       await interaction.reply({ embeds: [noTimerEmbed], ephemeral: true });
@@ -333,8 +508,9 @@ client.on("interactionCreate", async (interaction) => {
           "No active timer running in this voice channel.",
           "",
           "➔ **Use /start to begin a study session!**",
-          "Good luck!",
-          `${EMOJI_WISH} Do not change the timer without permissions of others`
+          `${EMOJI_WISH} Good luck!`,
+          "",
+          "Do not change the timer without permissions of others"
         ].join("\n"));
       return interaction.reply({ embeds: [noTimerEmbed], ephemeral: true });
     }
@@ -346,8 +522,8 @@ client.on("interactionCreate", async (interaction) => {
       ? `➔ **[WORK] Next break will be** <t:${targetUnix}:R>`
       : `➔ **[BREAK] Next session will be** <t:${targetUnix}:R>`;
     const subLine = isWork
-      ? `Good luck! | Session ${timer.sessionNumber || 1}`
-      : `Take a break! | Session ${timer.sessionNumber || 1}`;
+      ? `${EMOJI_WISH} Good luck! | Session ${timer.sessionNumber || 1}`
+      : `${EMOJI_WISH} Take a break! | Session ${timer.sessionNumber || 1}`;
 
     const timeEmbed = new EmbedBuilder()
       .setColor(ST_COLOR)
@@ -357,7 +533,8 @@ client.on("interactionCreate", async (interaction) => {
         "",
         targetLine,
         subLine,
-        `${EMOJI_WISH} Do not change the timer without permissions of others`
+        "",
+        "Do not change the timer without permissions of others"
       ].join("\n"));
 
     await interaction.reply({ embeds: [timeEmbed] });
