@@ -17,7 +17,7 @@ if (!TOKEN) {
 const EMOJI_WORK = "<:emoji_30:1522204006221480006>";
 const EMOJI_INFO = "<:emoji_31:1534127948288884787>";
 const EMOJI_STOP = "<:st92_water:1544945964589260843>";
-const EMOJI_WISH = "<:stn_bforyou:1548637495921737860>";
+const EMOJI_WISH = "<:stn_bforyou:1544939254671478794>";
 
 const client = new Client({
   intents: [
@@ -30,23 +30,10 @@ const client = new Client({
 // Active timers: channelId => timer state
 const activeTimers = new Map();
 
-// Signature ST!Timer color
+// Signature ST!Timer color: #F04747
 const ST_COLOR = 0xF04747;
 
-// Format seconds into clean readable running time
-function formatRemaining(totalSeconds) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  if (s === 0) {
-    return `${m} ${m === 1 ? "minute" : "minutes"}`;
-  }
-  if (m === 0) {
-    return `${s} ${s === 1 ? "second" : "seconds"}`;
-  }
-  return `${m}m ${s}s`;
-}
-
-// Exactly 3 clean slash commands
+// Exactly 3 clean slash commands (/start, /stop, /timer)
 const commands = [
   new SlashCommandBuilder()
     .setName("start")
@@ -74,22 +61,20 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 /**
- * Register commands without duplicates:
- * Clears global commands completely and registers strictly per-guild.
- * This ensures:
- * 1. Zero duplicate commands (having both global and guild causes Discord to show 2 copies of each command)
- * 2. Instant activation with 0 seconds delay (no 1-hour global cache wait)
+ * Register commands cleanly without duplicates:
+ * 1. Clears global application commands completely (eliminates duplicate entries)
+ * 2. Registers clean single set of commands to each joined guild for 0-second instant activation
  */
 async function registerCleanCommands(clientId) {
   try {
     const rest = new REST({ version: "10" }).setToken(TOKEN);
     console.log("Cleaning up duplicate commands and syncing fresh slash commands...");
 
-    // 1. Clear global commands to remove any duplicate global copies
+    // Clear global commands to remove duplicate entries in slash menu
     await rest.put(Routes.applicationCommands(clientId), { body: [] });
-    console.log("✅ Cleared global application commands (prevents duplicate commands in slash menu).");
+    console.log("✅ Cleared global application commands (prevents duplicates).");
 
-    // 2. Register single clean set of commands to each joined guild
+    // Register strictly to guilds currently joined
     const guilds = await client.guilds.fetch();
     for (const [guildId, oAuth2Guild] of guilds) {
       try {
@@ -111,7 +96,6 @@ client.once("ready", async () => {
   await registerCleanCommands(CLIENT_ID || client.user.id);
 });
 
-// If invited to a new server, register commands immediately
 client.on("guildCreate", async (guild) => {
   try {
     await guild.commands.set(commands);
@@ -121,12 +105,39 @@ client.on("guildCreate", async (guild) => {
   }
 });
 
+// Helper to build embed exactly matching ST!Timer screenshot
+function buildTimerEmbed(phase, sessionMins, breakMins, targetUnix, sessionNum) {
+  const isWork = phase === "session";
+  const header = isWork
+    ? `${EMOJI_WORK} **New study session started**`
+    : "☕ **Break time started**";
+
+  const targetLine = isWork
+    ? `➔ **[WORK] Next break will be** <t:${targetUnix}:R>`
+    : `➔ **[BREAK] Next session will be** <t:${targetUnix}:R>`;
+
+  const subLine = isWork
+    ? `Good luck! | Session ${sessionNum}`
+    : `Take a break! | Session ${sessionNum}`;
+
+  return new EmbedBuilder()
+    .setColor(ST_COLOR)
+    .setDescription([
+      header,
+      `Focus timer: **${sessionMins} minutes work** – **${breakMins} minutes break**`,
+      "",
+      targetLine,
+      subLine,
+      `${EMOJI_WISH} Do not change the timer without permissions of others`
+    ].join("\n"));
+}
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   const cmd = interaction.commandName;
 
-  // If user tries legacy /pause or /resume
+  // Legacy commands removed notice
   if (cmd === "pause" || cmd === "resume") {
     const removedEmbed = new EmbedBuilder()
       .setColor(ST_COLOR)
@@ -134,8 +145,8 @@ client.on("interactionCreate", async (interaction) => {
         "⚠️ **Command Removed**",
         `The \`/${cmd}\` command has been removed.`,
         "➔ **Please use /start, /stop, or /timer**",
-        `${EMOJI_WISH} Good luck!`,
-        "Do not change the timer without permissions of others"
+        "Good luck!",
+        `${EMOJI_WISH} Do not change the timer without permissions of others`
       ].join("\n"));
     return interaction.reply({ embeds: [removedEmbed], ephemeral: true });
   }
@@ -162,8 +173,8 @@ client.on("interactionCreate", async (interaction) => {
         "❌ **Not Connected**",
         "You must be connected to a voice channel to use this command.",
         "➔ **Join any voice channel in the server, then run /start**",
-        `${EMOJI_WISH} Good luck!`,
-        "Do not change the timer without permissions of others"
+        "Good luck!",
+        `${EMOJI_WISH} Do not change the timer without permissions of others`
       ].join("\n"));
     return interaction.reply({ embeds: [notConnectedEmbed], ephemeral: true });
   }
@@ -182,6 +193,8 @@ client.on("interactionCreate", async (interaction) => {
 
     const now = Date.now();
     const durationMs = sessionTime * 60 * 1000;
+    const targetEndTime = now + durationMs;
+    const targetUnix = Math.floor(targetEndTime / 1000);
 
     const timerData = {
       channelId: voiceChannel.id,
@@ -190,50 +203,39 @@ client.on("interactionCreate", async (interaction) => {
       phase: "session", // 'session' | 'break'
       sessionMinutes: sessionTime,
       breakMinutes: breakTime,
-      targetEndTime: now + durationMs,
+      targetEndTime: targetEndTime,
       startedBy: interaction.user.tag,
       intervalId: null,
       message: null,
       tickCount: 0
     };
 
-    // Initial embed matching ST!Timer format exactly
-    const initialEmbed = new EmbedBuilder()
-      .setColor(ST_COLOR)
-      .setDescription([
-        `${EMOJI_WORK} **New study session started**`,
-        `Focus timer: **${sessionTime} minutes work** – **${breakTime} minutes break**`,
-        `➔ **[WORK] Next break will be in ${sessionTime} minutes**`,
-        `${EMOJI_WISH} Good luck! | Session 1`,
-        "Do not change the timer without permissions of others"
-      ].join("\n"));
+    // Embed matching screenshot exactly:
+    // Line 1: <:emoji_30:1522204006221480006> **New study session started**
+    // Line 2: Focus timer: **50 minutes work** – **10 minutes break**
+    // Line 3: ➔ **[WORK] Next break will be** <t:1789382944:R>
+    // Line 4: Good luck! | Session 1
+    // Line 5: <:stn_bforyou:1544939254671478794> Do not change the timer without permissions of others
+    const initialEmbed = buildTimerEmbed("session", sessionTime, breakTime, targetUnix, 1);
 
-    // Reply and capture the message so we can edit it live every 10s
     const replyMsg = await interaction.reply({ embeds: [initialEmbed], fetchReply: true });
     timerData.message = replyMsg;
 
-    // Timer Loop: 1-second precision with Date.now() timestamp math
+    // Timer Loop: 1-second interval with live 10-second embed updates
     timerData.intervalId = setInterval(async () => {
       const currentTime = Date.now();
-      const remainingSeconds = Math.max(0, Math.round((timerData.targetEndTime - currentTime) / 1000));
+      const remainingMs = timerData.targetEndTime - currentTime;
 
-      // 1. Transition when time expires
-      if (remainingSeconds <= 0) {
+      // 1. Transition when current phase ends
+      if (remainingMs <= 0) {
         if (timerData.phase === "session") {
-          // Work ended -> Break begins
+          // Work session finished -> Break begins
           timerData.phase = "break";
           timerData.targetEndTime = Date.now() + (timerData.breakMinutes * 60 * 1000);
           timerData.tickCount = 0;
+          const nextTargetUnix = Math.floor(timerData.targetEndTime / 1000);
 
-          const breakEmbed = new EmbedBuilder()
-            .setColor(ST_COLOR)
-            .setDescription([
-              "☕ **Break time started**",
-              `Focus timer: **${timerData.sessionMinutes} minutes work** – **${timerData.breakMinutes} minutes break**`,
-              `➔ **[BREAK] Next session will be in ${timerData.breakMinutes} minutes**`,
-              `Take a break! | Session ${timerData.sessionNumber}`,
-              "Do not change the timer without permissions of others"
-            ].join("\n"));
+          const breakEmbed = buildTimerEmbed("break", timerData.sessionMinutes, timerData.breakMinutes, nextTargetUnix, timerData.sessionNumber);
 
           try {
             const sentBreakMsg = await voiceChannel.send({ embeds: [breakEmbed] });
@@ -242,61 +244,41 @@ client.on("interactionCreate", async (interaction) => {
             console.error("Failed to send break announcement:", e);
           }
         } else if (timerData.phase === "break") {
-          // Break ended -> Next Work session begins
+          // Break finished -> Next session begins
           timerData.sessionNumber += 1;
           timerData.phase = "session";
           timerData.targetEndTime = Date.now() + (timerData.sessionMinutes * 60 * 1000);
           timerData.tickCount = 0;
+          const nextTargetUnix = Math.floor(timerData.targetEndTime / 1000);
 
-          const workEmbed = new EmbedBuilder()
-            .setColor(ST_COLOR)
-            .setDescription([
-              `${EMOJI_WORK} **New study session started**`,
-              `Focus timer: **${timerData.sessionMinutes} minutes work** – **${timerData.breakMinutes} minutes break**`,
-              `➔ **[WORK] Next break will be in ${timerData.sessionMinutes} minutes**`,
-              `${EMOJI_WISH} Good luck! | Session ${timerData.sessionNumber}`,
-              "Do not change the timer without permissions of others"
-            ].join("\n"));
+          const workEmbed = buildTimerEmbed("session", timerData.sessionMinutes, timerData.breakMinutes, nextTargetUnix, timerData.sessionNumber);
 
           try {
             const sentWorkMsg = await voiceChannel.send({ embeds: [workEmbed] });
             timerData.message = sentWorkMsg; // Live updates continue on the new work message
           } catch (e) {
-            console.error("Failed to send new work session announcement:", e);
+            console.error("Failed to send work announcement:", e);
           }
         }
         return;
       }
 
-      // 2. Live Update Every 10 Seconds
+      // 2. Auto-Update every 10 seconds (refreshes message without Discord rate limit)
       timerData.tickCount = (timerData.tickCount || 0) + 1;
       if (timerData.tickCount >= 10 && timerData.message) {
         timerData.tickCount = 0;
         try {
-          const isWork = timerData.phase === "session";
-          const header = isWork
-            ? `${EMOJI_WORK} **New study session started**`
-            : "☕ **Break time started**";
-          const nextTarget = isWork
-            ? `➔ **[WORK] Next break will be in ${formatRemaining(remainingSeconds)}**`
-            : `➔ **[BREAK] Next session will be in ${formatRemaining(remainingSeconds)}**`;
-          const wish = isWork
-            ? `${EMOJI_WISH} Good luck! | Session ${timerData.sessionNumber}`
-            : `Take a break! | Session ${timerData.sessionNumber}`;
-
-          const updatedEmbed = new EmbedBuilder()
-            .setColor(ST_COLOR)
-            .setDescription([
-              header,
-              `Focus timer: **${timerData.sessionMinutes} minutes work** – **${timerData.breakMinutes} minutes break**`,
-              nextTarget,
-              wish,
-              "Do not change the timer without permissions of others"
-            ].join("\n"));
-
-          await timerData.message.edit({ embeds: [updatedEmbed] });
+          const currentTargetUnix = Math.floor(timerData.targetEndTime / 1000);
+          const liveEmbed = buildTimerEmbed(
+            timerData.phase,
+            timerData.sessionMinutes,
+            timerData.breakMinutes,
+            currentTargetUnix,
+            timerData.sessionNumber
+          );
+          await timerData.message.edit({ embeds: [liveEmbed] });
         } catch (err) {
-          // If message was deleted by user or permissions changed, safely ignore
+          // Ignore if message was deleted
         }
       }
     }, 1000);
@@ -317,9 +299,10 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription([
           `${EMOJI_STOP} **Study session stopped**`,
           `Focus timer: **${timer.sessionMinutes} minutes work** – **${timer.breakMinutes} minutes break**`,
+          "",
           `➔ **[STOP] Timer stopped for this channel after ${sessionsCount} ${sessionsCount === 1 ? "session" : "sessions"}**`,
           `Good work! | Session ${sessionsCount}`,
-          "Do not change the timer without permissions of others"
+          `${EMOJI_WISH} Do not change the timer without permissions of others`
         ].join("\n"));
 
       await interaction.reply({ embeds: [stopEmbed] });
@@ -329,9 +312,10 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription([
           `${EMOJI_INFO} **Timer information**`,
           "No active timer running in this voice channel.",
+          "",
           "➔ **Use /start to begin a study session!**",
-          `${EMOJI_WISH} Good luck!`,
-          "Do not change the timer without permissions of others"
+          "Good luck!",
+          `${EMOJI_WISH} Do not change the timer without permissions of others`
         ].join("\n"));
 
       await interaction.reply({ embeds: [noTimerEmbed], ephemeral: true });
@@ -347,21 +331,22 @@ client.on("interactionCreate", async (interaction) => {
         .setDescription([
           `${EMOJI_INFO} **Timer information**`,
           "No active timer running in this voice channel.",
+          "",
           "➔ **Use /start to begin a study session!**",
-          `${EMOJI_WISH} Good luck!`,
-          "Do not change the timer without permissions of others"
+          "Good luck!",
+          `${EMOJI_WISH} Do not change the timer without permissions of others`
         ].join("\n"));
       return interaction.reply({ embeds: [noTimerEmbed], ephemeral: true });
     }
 
-    const currentRemaining = Math.max(0, Math.round((timer.targetEndTime - Date.now()) / 1000));
     const isWork = timer.phase === "session";
     const phaseTitle = isWork ? "Timer information: Work!" : "Timer information: Break!";
-    const targetText = isWork
-      ? `➔ **[WORK] Next break will be in ${formatRemaining(currentRemaining)}**`
-      : `➔ **[BREAK] Next session will be in ${formatRemaining(currentRemaining)}**`;
-    const wishText = isWork
-      ? `${EMOJI_WISH} Good luck! | Session ${timer.sessionNumber || 1}`
+    const targetUnix = Math.floor(timer.targetEndTime / 1000);
+    const targetLine = isWork
+      ? `➔ **[WORK] Next break will be** <t:${targetUnix}:R>`
+      : `➔ **[BREAK] Next session will be** <t:${targetUnix}:R>`;
+    const subLine = isWork
+      ? `Good luck! | Session ${timer.sessionNumber || 1}`
       : `Take a break! | Session ${timer.sessionNumber || 1}`;
 
     const timeEmbed = new EmbedBuilder()
@@ -369,9 +354,10 @@ client.on("interactionCreate", async (interaction) => {
       .setDescription([
         `${EMOJI_INFO} **${phaseTitle}**`,
         `Focus timer: **${timer.sessionMinutes} minutes work** – **${timer.breakMinutes} minutes break**`,
-        targetText,
-        wishText,
-        "Do not change the timer without permissions of others"
+        "",
+        targetLine,
+        subLine,
+        `${EMOJI_WISH} Do not change the timer without permissions of others`
       ].join("\n"));
 
     await interaction.reply({ embeds: [timeEmbed] });
