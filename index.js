@@ -31,6 +31,12 @@ const EMOJI_INFO = "<:emoji_31:1534127948288884787>";
 const EMOJI_STOP = "<:st92_water:1544945964589260843>";
 const EMOJI_WISH = "<:stn_bforyou:1544939254671478794>";
 
+// Blocked Category IDs where bot commands cannot be used
+const BLOCKED_CATEGORY_IDS = [
+  "1546252337830559896",
+  "1546252615321653248"
+];
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -175,9 +181,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName("settings")
     .setDescription("Configure your timer mentions and bot settings"),
-  new SlashCommandBuilder()
-    .setName("setting")
-    .setDescription("Configure your timer mentions and bot settings"),
 ].map(cmd => cmd.toJSON());
 
 /**
@@ -280,21 +283,21 @@ client.on("interactionCreate", async (interaction) => {
 
   const cmd = interaction.commandName;
 
-  // /settings & /setting command (Accessible from anywhere, ephemeral)
-  if (cmd === "settings" || cmd === "setting") {
+  // /settings command (Can configure preferences, ephemeral)
+  if (cmd === "settings") {
     const resp = getSettingsResponse(interaction.user.id);
     return interaction.reply(resp);
   }
 
   // Legacy commands removed notice
-  if (cmd === "pause" || cmd === "resume") {
+  if (cmd === "pause" || cmd === "resume" || cmd === "setting") {
     const removedEmbed = new EmbedBuilder()
       .setColor(ST_COLOR)
       .setDescription([
         "⚠️ **Command Removed**",
         `The \`/${cmd}\` command has been removed.`,
         "",
-        "➔ **Please use /start, /stop, or /timer**",
+        "➔ **Please use /start, /stop, /timer, or /settings**",
         `${EMOJI_WISH} Good luck!`,
         "",
         "Do not change the timer without permissions of others"
@@ -302,7 +305,25 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ embeds: [removedEmbed], ephemeral: true });
   }
 
-  // Detect member voice channel
+  // 1. Category Block Check: Commands cannot be used in blocked categories
+  const currentChannel = interaction.channel;
+  const channelParentId = currentChannel?.parentId;
+  if (channelParentId && BLOCKED_CATEGORY_IDS.includes(channelParentId)) {
+    const blockedEmbed = new EmbedBuilder()
+      .setColor(ST_COLOR)
+      .setDescription([
+        "🚫 **Channel Not Allowed**",
+        "Timer commands cannot be used in this category.",
+        "",
+        "➔ **Please use a study voice channel outside this category.**",
+        `${EMOJI_WISH} Good luck!`,
+        "",
+        "Do not change the timer without permissions of others"
+      ].join("\n"));
+    return interaction.reply({ embeds: [blockedEmbed], ephemeral: true });
+  }
+
+  // 2. Fetch member voice state
   let member = interaction.member;
   if ((!member || !member.voice || !member.voice.channel) && interaction.guild) {
     try {
@@ -312,25 +333,62 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  let voiceChannel = member?.voice?.channel;
-  if (!voiceChannel && interaction.channel && typeof interaction.channel.isVoiceBased === "function" && interaction.channel.isVoiceBased()) {
-    voiceChannel = interaction.channel;
-  }
+  const memberVoiceChannel = member?.voice?.channel;
 
-  if (!voiceChannel) {
+  // Must be connected to a voice channel
+  if (!memberVoiceChannel) {
     const notConnectedEmbed = new EmbedBuilder()
       .setColor(ST_COLOR)
       .setDescription([
-        "❌ **Not Connected**",
+        "❌ **Not Connected to Voice**",
         "You must be connected to a voice channel to use this command.",
         "",
-        "➔ **Join any voice channel in the server, then run /start**",
+        "➔ **Create your custom VC to use pomodoro timers.**",
+        "➔ Join your custom VC and run the command inside its text chat.",
+        "",
         `${EMOJI_WISH} Good luck!`,
         "",
         "Do not change the timer without permissions of others"
       ].join("\n"));
     return interaction.reply({ embeds: [notConnectedEmbed], ephemeral: true });
   }
+
+  // 3. Commander In-VC Check: Commander must run the command IN the text chat of the VC they are connected to
+  // (Cannot run in general text chat, and cannot run in a VC other than the one they are connected to)
+  if (interaction.channelId !== memberVoiceChannel.id) {
+    const wrongChannelEmbed = new EmbedBuilder()
+      .setColor(ST_COLOR)
+      .setDescription([
+        "❌ **Wrong Voice Channel**",
+        `You are currently connected to **${memberVoiceChannel.name}**.`,
+        "",
+        "➔ **Create your custom VC to use pomodoro timers.**",
+        `➔ Or open the text chat inside <#${memberVoiceChannel.id}> to use timer commands.`,
+        "",
+        `${EMOJI_WISH} Good luck!`,
+        "",
+        "Do not change the timer without permissions of others"
+      ].join("\n"));
+    return interaction.reply({ embeds: [wrongChannelEmbed], ephemeral: true });
+  }
+
+  // Also check if the member's voice channel is inside a blocked category
+  if (memberVoiceChannel.parentId && BLOCKED_CATEGORY_IDS.includes(memberVoiceChannel.parentId)) {
+    const blockedEmbed = new EmbedBuilder()
+      .setColor(ST_COLOR)
+      .setDescription([
+        "🚫 **Channel Not Allowed**",
+        "Timer commands cannot be used in this category.",
+        "",
+        "➔ **Please use a study voice channel outside this category.**",
+        `${EMOJI_WISH} Good luck!`,
+        "",
+        "Do not change the timer without permissions of others"
+      ].join("\n"));
+    return interaction.reply({ embeds: [blockedEmbed], ephemeral: true });
+  }
+
+  const voiceChannel = memberVoiceChannel;
 
   // --- /start ---
   if (cmd === "start") {
