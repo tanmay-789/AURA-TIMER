@@ -175,9 +175,6 @@ const commands = [
   new SlashCommandBuilder()
     .setName("settings")
     .setDescription("Configure your timer mentions and bot settings"),
-  new SlashCommandBuilder()
-    .setName("setting")
-    .setDescription("Configure your timer mentions and bot settings"),
 ].map(cmd => cmd.toJSON());
 
 /**
@@ -280,8 +277,8 @@ client.on("interactionCreate", async (interaction) => {
 
   const cmd = interaction.commandName;
 
-  // /settings & /setting command (Accessible from anywhere, ephemeral)
-  if (cmd === "settings" || cmd === "setting") {
+  // /settings command (Accessible from anywhere, ephemeral)
+  if (cmd === "settings") {
     const resp = getSettingsResponse(interaction.user.id);
     return interaction.reply(resp);
   }
