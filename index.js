@@ -203,7 +203,7 @@ async function registerCleanCommands(clientId) {
       try {
         const guild = await oAuth2Guild.fetch();
         await guild.commands.set(commands);
-        console.log(`✅ Synced clean commands (/start, /stop, /timer) to guild: ${guild.name}`);
+        console.log(`✅ Synced clean commands (/start, /stop, /timer, /settings) to guild: ${guild.name}`);
       } catch (err) {
         console.warn(`Warning: Could not sync commands to guild ${guildId}:`, err.message);
       }
